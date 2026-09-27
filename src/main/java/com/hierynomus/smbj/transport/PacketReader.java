@@ -1,0 +1,92 @@
+/*
+ * Copyright (C)2016 - SMBJ Contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.hierynomus.smbj.transport;
+
+import java.io.BufferedInputStream;
+import java.io.InputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import com.hierynomus.protocol.PacketData;
+import com.hierynomus.protocol.transport.PacketReceiver;
+import com.hierynomus.protocol.transport.TransportException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class PacketReader<D extends PacketData<?>> implements Runnable {
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    protected InputStream in;
+    private PacketReceiver<D> handler;
+
+    private AtomicBoolean stopped = new AtomicBoolean(false);
+    private Thread thread;
+
+    public PacketReader(String host, InputStream in, PacketReceiver<D> handler) {
+        if (in instanceof BufferedInputStream) {
+            this.in = in;
+        } else {
+            this.in = new BufferedInputStream(in);
+        }
+        this.handler = handler;
+        this.thread = new Thread(this, "Packet Reader for " + host+", Original Thread name: "+Thread.currentThread().getName());
+        this.thread.setDaemon(true);
+    }
+
+    @Override
+    public void run() {
+        while (!Thread.currentThread().isInterrupted() && !stopped.get()) {
+            try {
+                readPacket();
+            } catch (TransportException e) {
+                if (stopped.get()) {
+                    break;
+                }
+                logger.info("PacketReader error, got exception.", e);
+                handler.handleError(e);
+                return;
+            }
+        }
+        if (stopped.get()) {
+            logger.info("{} stopped.", thread);
+        }
+    }
+
+    public void stop() {
+        logger.debug("Stopping PacketReader...");
+        stopped.set(true);
+        thread.interrupt();
+    }
+
+    private void readPacket() throws TransportException {
+        D packet = doRead();
+        logger.debug("Received packet {}", packet);
+        handler.handle(packet);
+    }
+
+    /**
+     * Read the actual SMB2 Packet from the {@link InputStream}
+     *
+     * @return the read SMB2Packet
+     * @throws TransportException
+     */
+    protected abstract D doRead() throws TransportException;
+
+    public void start() {
+        logger.debug("Starting PacketReader on thread: {}", thread.getName());
+        this.thread.start();
+    }
+}
